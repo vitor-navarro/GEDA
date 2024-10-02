@@ -1,14 +1,14 @@
-import java.io.IOException;
+import java.io.*;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.Timestamp;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 import static java.nio.file.StandardWatchEventKinds.ENTRY_CREATE;
 
@@ -23,10 +23,16 @@ public class Main {
     private static final Map<WatchKey, Path> keyDirectoryMap = new HashMap<>();
     private static final int timeBetweenRuns = 10; // SECONDS
 
-    private static final List<String> fileAndFolderThatCannotBeModified = new ArrayList<>();
-    private static final LocalDateTime limitTimeForFileAndFolderReplace = LocalDateTime.now().minus(10, ChronoUnit.MINUTES); // 30 days
+    private static final List<Path> fileThatCannotBeModified = new ArrayList<>();
+    private static final LocalDateTime limitTimeForFileAndFolderReplace = LocalDateTime.now().minusMinutes(1); // 30 days
+    private static final int limitTimeForFileAndFolderReplaceInDays = 1;
 
     public static void main(String[] args) throws IOException {
+
+        if (!verifyArquivePathControlExists()){
+            createArquivePathControl();
+        }
+
         // Adicione quantos diretórios quiser
         sourcePaths.add("C:\\Users\\Suporte TI\\Desktop\\backup test server data");
         sourcePaths.add("D:\\vitor\\Gepit images");
@@ -40,10 +46,10 @@ public class Main {
                 List<String> subdirectories = Files.list(actualPath)
                         .filter(Files::isDirectory) // Filtra apenas subpastas
                         .map(Path::toString) // Converte Path para String
-                        .collect(Collectors.toList()); // Filtra para pegar apenas subpastas
+                        .toList(); // Filtra para pegar apenas subpastas
                 subSourcePaths.addAll(subdirectories);
             } catch (IOException e) {
-                e.printStackTrace();
+                System.out.println("Erro ao adicionar os source paths" + e);
             }
         }
 
@@ -52,14 +58,17 @@ public class Main {
         // Registrar todas as pastas e armazenar a relação WatchKey -> Path
         for (String sourcePath : sourcePaths) {
             Path path = Paths.get(sourcePath);
-            addArquiveToWatcher(path); // Mapear a WatchKey para o diretório correspondente
+            addArquiveToWatcher(path);
         }
 
+        // Adiciona os subarquivos
         for (String subSourcePaths : subSourcePaths) {
             Path path = Paths.get(subSourcePaths);
             addArquiveToWatcher(path);
-            // Mapear a WatchKey para o diretório correspondente
         }
+
+        // Adiciona os arquivos que não podem ser modificados.
+        addFilesThatCannotBeModified();
 
         // Criar um ScheduledExecutorService para executar a cada 1 minuto
         ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
@@ -69,6 +78,7 @@ public class Main {
         try {
             Thread.sleep(Long.MAX_VALUE); // Mantém o programa em execução
         } catch (InterruptedException e) {
+            System.out.println("Erro de thread " + e);
             Thread.currentThread().interrupt(); // Lida com a interrupção do thread
         } finally {
             executor.shutdown(); // Fecha o executor ao final
@@ -88,7 +98,7 @@ public class Main {
                         try {
                             handlePathCopy(fullSourcePath, event);
                         } catch (Exception e) {
-                            System.out.println(e);
+                            System.out.println("error monitor events HandlePathCopy " + e);
                         }
                     }
                 }
@@ -109,17 +119,20 @@ public class Main {
                 if(event.kind() == ENTRY_CREATE){
                     try {
                         if(Files.isDirectory(fullSourcePath)){
-                            copyRecursive(fullSourcePath, destination);
                             try{
+                                copyRecursive(fullSourcePath, destination);
                                 recursiveAddArquiveToWatcher(fullSourcePath);
                             } catch (Exception e ){
                                 System.out.println("Erro no recursive add " + e);
                             }
-                        } else {
+                        } else if(checkIfCanUpdateFile(fullSourcePath)){
+                            Instant timeStamp = Instant.now();
+                            addSourcePathControlArquive(fullSourcePath, destination, timeStamp);
                             Files.copy(fullSourcePath, destination, StandardCopyOption.REPLACE_EXISTING);
+                        } else if(!checkIfCanUpdateFile(fullSourcePath)){
+                            System.out.println("O caminho não pode ser copiado");
                         }
 
-                        //printKeyDirectoryMap();
                     } catch (Exception e) {
                         System.out.println("Erro handle copy: " + e);
                     }
@@ -139,15 +152,20 @@ public class Main {
           @Override
           public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
               Path destinationdDir = destination.resolve(source.relativize(dir));
-              if(Files.notExists(destinationdDir) && Files.isDirectory(source)){
+                  if(Files.notExists(destinationdDir) && Files.isDirectory(source)){
                   Files.createDirectories(destinationdDir);
               }
               return FileVisitResult.CONTINUE;
           }
 
           public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException{
-              Path destinationFile = destination.resolve(source.relativize(file));
-              Files.copy(file,destinationFile, StandardCopyOption.REPLACE_EXISTING);
+              if(checkIfCanUpdateFile(source)){
+                  Instant timeStamp = Instant.now();
+                  Path destinationFile = destination.resolve(source.relativize(file));
+                  addSourcePathControlArquive(file, destinationFile, timeStamp);
+                  Files.copy(file,destinationFile, StandardCopyOption.REPLACE_EXISTING);
+              }
+
               return FileVisitResult.CONTINUE;
           }
 
@@ -198,7 +216,7 @@ public class Main {
     }
 
 
-    private static void foldersAndFilesThatCannotBeReplaced(){
+    private static void addFilesThatCannotBeModified(){
         try {
             // Listando arquivos e pastas na pasta
             Files.walk(Path.of(baseDestinationPath)).forEach(path -> {
@@ -209,30 +227,137 @@ public class Main {
                             .toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
 
                     // Verifica se o arquivo ou pasta foi modificado há mais de 30 dias
-                    if (fileModifiedTime.isBefore(limitTimeForFileAndFolderReplace)) {
-                        if (Files.isDirectory(path)) {
-                            fileAndFolderThatCannotBeModified.add(String.valueOf(path.getFileName()));
-                        } else if (Files.isRegularFile(path)) {
-                            fileAndFolderThatCannotBeModified.add(String.valueOf(path.getFileName()));
-                        }
+                    if (fileModifiedTime.isBefore(limitTimeForFileAndFolderReplace) && Files.isRegularFile(path)) {
+                        fileThatCannotBeModified.add(path);
                     }
                 } catch (IOException e) {
-                    e.printStackTrace();
+                    System.out.println("Error 1 addFilesThatCannotBeModified " + e);
                 }
             });
         } catch (IOException e) {
-            e.printStackTrace();
+            System.out.println("Error 2 addFilesThatCannotBeModified " + e);
         }
+    }
+
+    private static void createArquivePathControl(){
+        try{
+            File pathControlFile = new File("PathControl.txt");
+
+            if(pathControlFile.createNewFile()){
+                System.out.println("Arquivo criado com sucesso");
+            } else {
+                System.out.println("Arquivo já existe");
+            }
+        } catch (Exception e){
+            System.out.println("createPathControlArquive error " + e);
+        }
+    }
+
+    private static boolean verifyArquivePathControlExists(){
+        File pathControlFile = new File("PathControl.txt");
+
+        if(pathControlFile.exists()){
+            return true;
+        }
+        return false;
+    }
+
+    private static void addSourcePathControlArquive(Path sourcePath, Path destinationPath, Instant timestamp){
+
+        try{
+
+            BufferedReader reader = new BufferedReader(new FileReader("PathControl.txt"));
+            String line;
+            boolean arquivoEstaNoPathControl = false;
+            while((line = reader.readLine()) != null){
+                String[] params = line.split("\\|");
+                if(params.length > 0 && params[0].equals(sourcePath.toString())){
+                    arquivoEstaNoPathControl = true;
+                }
+
+            }
+
+            if(!arquivoEstaNoPathControl){
+                File file = new File("PathControl.txt");
+
+                FileWriter fileWriter = new FileWriter(file, true);
+                PrintWriter printWriter = new PrintWriter(fileWriter);
+
+                printWriter.println(sourcePath + "|" + destinationPath + "|" + timestamp);
+                printWriter.close();
+            }
+
+        } catch (Exception e){
+            System.out.println("AddSourcePathToControlArquive error: " + e);
+        }
+
+    }
+
+    private static void modifyTimestampFromSourcePathControlArquive(Path searchPath, Timestamp timestamp){
+        String arquiveName = "PathControl.txt";
+
+        File file = new File(arquiveName);
+
+        String[] oldLineParams = null;
+
+        List<String> lines = new ArrayList<>();
+
+        try {
+            BufferedReader reader = new BufferedReader(new FileReader(arquiveName));
+            String line;
+            while((line = reader.readLine()) !=null){
+                String[] params = line.split("\\|");
+                if(params.length > 0  && params[0].equals(searchPath.toString())){
+
+                    line = searchPath + "|" + params[1] + "|" + timestamp;
+                }
+
+                lines.add(line);
+            }
+
+            reader.close();
+
+        } catch (Exception e){
+            System.out.println("Read - ModifyTimestampFromSourcePathControlArquive erro: " + e);
+        }
+
+        try {
+            PrintWriter writer = new PrintWriter(new FileWriter(arquiveName));
+
+            for(String line : lines){
+                writer.println(line);
+            }
+
+            writer.close();
+            System.out.println("arquivo atualizado com sucesso");
+        } catch (Exception e) {
+            System.out.println("Write - ModifyTimestampFromSourcePathControlArquive erro: " + e);
+        }
+    }
+
+    //TODO
+    private static boolean checkIfCanUpdateFile(Path path) throws IOException {
+        return true;
     }
 
     private static void printKeyDirectoryMap(){
         System.out.println("KEY DIRECTORY MAP:");
         Collection<Path> keyValues = keyDirectoryMap.values();
         Iterator<Path> iterator = keyValues.iterator();
+
         while(iterator.hasNext()){
             System.out.println(iterator.next());
         }
 
+        System.out.println("--------------");
+    }
+
+    private static void printListFileThatCannotBeModified(){
+        System.out.println("FILES THAT CANNOT BE MODIFIED");
+
+        for(int i = 0; i < fileThatCannotBeModified.size(); i++){
+            System.out.println(fileThatCannotBeModified.get(i));
+        }
 
         System.out.println("--------------");
     }
