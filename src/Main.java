@@ -28,15 +28,14 @@ public class Main {
     private static final int limitTimeForFileAndFolderReplaceInDays = 30; // days
 
     public static void main(String[] args) throws IOException {
-
         if (!verifyArquivePathControlExists()){
             createArquivePathControl();
         }
 
         // Adicione quantos diretórios quiser
         sourcePaths.add("C:\\Users\\Suporte TI\\Desktop\\backup test server data");
-        sourcePaths.add("D:\\vitor\\Gepit images");
-        sourcePaths.add("D:\\vitor\\ISOs");
+        //sourcePaths.add("D:\\vitor\\Gepit images");
+        //sourcePaths.add("D:\\vitor\\ISOs");
 
         for(int i = 0; i < sourcePaths.size(); i++) {
             Path actualPath = Paths.get(sourcePaths.get(i));
@@ -124,7 +123,7 @@ public class Main {
             if(fullSourcePath.startsWith((basePath))){
                 String relativePath = fullSourcePath.toString()
                         .substring(basePath.toString().length());
-                Path destination = Path.of(baseDestinationPath + relativePath);
+                Path destination = Path.of(baseDestinationPath + "\\" + fullSourcePath.getFileName());
                 if(event.kind() == ENTRY_CREATE){
                     try {
                         if(Files.isDirectory(fullSourcePath)){
@@ -135,6 +134,7 @@ public class Main {
                                 System.out.println("Erro no recursive add " + e);
                             }
                         } else if(checkIfCanUpdateFile(fullSourcePath)){
+                            System.out.println(fullSourcePath + "+++" + destination);
                             Instant timeStamp = Instant.now();
                             addSourcePathControlArquive(fullSourcePath, destination, timeStamp);
                             Files.copy(fullSourcePath, destination, StandardCopyOption.REPLACE_EXISTING);
@@ -366,7 +366,7 @@ public class Main {
                     if(daysBetween >= limitTimeForFileAndFolderReplaceInDays){
                         return false;
                     } else{
-                        return false;
+                        return true;
                     }
                 }
             }
@@ -410,15 +410,10 @@ public class Main {
 
         for (int i = 0; i < sourcePaths.size(); i++) {
             Path sourcePath = Path.of(sourcePaths.get(i));
-            Path destinationPath = Path.of(baseDestinationPath + "\\backup" + sourcePath.getFileName().toString());
-
-            System.out.println(sourcePath);
-            System.out.println(destinationPath);
+            Path destinationPath = Path.of(baseDestinationPath + "\\" + sourcePath.getFileName().toString());
 
             try {
                 copyRecursive(sourcePath, destinationPath);
-                System.out.println("Backup inicial realizado com sucesso para: " + sourcePath.toString());
-
                 // Adicionar as pastas e arquivos ao watcher para monitoramento após o backup inicial
                 recursiveAddArquiveToWatcher(sourcePath);
             } catch (Exception e) {
