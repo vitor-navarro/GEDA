@@ -1,7 +1,7 @@
 import java.io.*;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.security.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -24,8 +24,8 @@ public class Main {
     private static final int timeBetweenRuns = 10; // SECONDS
 
     private static final List<Path> fileThatCannotBeModified = new ArrayList<>();
-    private static final LocalDateTime limitTimeForFileAndFolderReplace = LocalDateTime.now().minusMinutes(1); // 30 days
-    private static final int limitTimeForFileAndFolderReplaceInDays = 1;
+    private static final LocalDateTime limitTimeForFileAndFolderReplace = LocalDateTime.now().minusDays(30); // 30 days
+    private static final int limitTimeForFileAndFolderReplaceInDays = 30; // days
 
     public static void main(String[] args) throws IOException {
 
@@ -69,6 +69,15 @@ public class Main {
 
         // Adiciona os arquivos que não podem ser modificados.
         addFilesThatCannotBeModified();
+
+        if(verfiyIfFirstBackup()){
+            try{
+                performFistBackup();
+            } catch (Exception e){
+                System.out.println("Primeiro backup falhou " + e);
+            }
+
+        }
 
         // Criar um ScheduledExecutorService para executar a cada 1 minuto
         ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
@@ -130,7 +139,8 @@ public class Main {
                             addSourcePathControlArquive(fullSourcePath, destination, timeStamp);
                             Files.copy(fullSourcePath, destination, StandardCopyOption.REPLACE_EXISTING);
                         } else if(!checkIfCanUpdateFile(fullSourcePath)){
-                            System.out.println("O caminho não pode ser copiado");
+                            Path newDestination = Path.of(destination.getParent() + "\\Novo - " + relativePath.replace("\\", ""));
+                            Files.copy(fullSourcePath, newDestination, StandardCopyOption.REPLACE_EXISTING);
                         }
 
                     } catch (Exception e) {
@@ -164,6 +174,10 @@ public class Main {
                   Path destinationFile = destination.resolve(source.relativize(file));
                   addSourcePathControlArquive(file, destinationFile, timeStamp);
                   Files.copy(file,destinationFile, StandardCopyOption.REPLACE_EXISTING);
+              } else{
+                  String relativePath = String.valueOf(source.relativize(file));
+                  Path newDestination = Path.of(destination.getParent() + "\\Novo - " + relativePath.replace("\\", ""));
+                  Files.copy(file,newDestination, StandardCopyOption.REPLACE_EXISTING);
               }
 
               return FileVisitResult.CONTINUE;
@@ -285,6 +299,8 @@ public class Main {
 
                 printWriter.println(sourcePath + "|" + destinationPath + "|" + timestamp);
                 printWriter.close();
+            } else{
+                modifyTimestampFromSourcePathControlArquive(sourcePath, timestamp);
             }
 
         } catch (Exception e){
@@ -293,7 +309,7 @@ public class Main {
 
     }
 
-    private static void modifyTimestampFromSourcePathControlArquive(Path searchPath, Timestamp timestamp){
+    private static void modifyTimestampFromSourcePathControlArquive(Path searchPath, Instant timestamp){
         String arquiveName = "PathControl.txt";
 
         File file = new File(arquiveName);
@@ -335,9 +351,81 @@ public class Main {
         }
     }
 
-    //TODO
-    private static boolean checkIfCanUpdateFile(Path path) throws IOException {
-        return true;
+    private static boolean checkIfCanUpdateFile(Path sourcePath) throws IOException {
+        try{
+             BufferedReader reader = new BufferedReader(new FileReader("PathControl.txt"));
+             String line;
+            while((line = reader.readLine()) != null){
+                String[] params = line.split("\\|");
+                if(params.length > 0 && params[0].equals(sourcePath.toString())){
+                    Instant actualFileTime = Files.getLastModifiedTime(sourcePath).toInstant();
+                    Instant lastModificationInstant = Instant.parse(params[2]);
+
+                    long daysBetween = Duration.between(lastModificationInstant, actualFileTime).toMinutes();
+
+                    if(daysBetween >= limitTimeForFileAndFolderReplaceInDays){
+                        return false;
+                    } else{
+                        return false;
+                    }
+                }
+            }
+
+        } catch (Exception e){
+            System.out.println("Erro no checkIfCanUpdateFile " + e);
+        }
+        return true; //mudar para false
+    }
+
+    private static boolean verfiyIfFirstBackup() {
+        try {
+            File firstBackupFile = new File("firstBackup.txt");
+
+            // Verifica se o arquivo já existe
+            if (firstBackupFile.exists()) {
+                System.out.println("Arquivo firstBackup.txt já existe");
+                return false; // Indica que o arquivo já existia
+            } else {
+                // Cria o arquivo se ele não existir
+                if (firstBackupFile.createNewFile()) {
+                    System.out.println("Arquivo firstBackup.txt criado com sucesso");
+                    return true; // Indica que o arquivo foi criado com sucesso
+                } else {
+                    System.out.println("Falha ao criar o arquivo firstBackup.txt");
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("Erro ao verificar/criar o first backup: " + e.getMessage());
+        }
+        return false;
+    }
+
+    private static void performFistBackup() throws Exception{
+
+        File firstBackupFile = new File("firstBackup.txt");
+        if(!firstBackupFile.exists()){
+            firstBackupFile.createNewFile();
+        }
+
+
+        for (int i = 0; i < sourcePaths.size(); i++) {
+            Path sourcePath = Path.of(sourcePaths.get(i));
+            Path destinationPath = Path.of(baseDestinationPath + "\\backup" + sourcePath.getFileName().toString());
+
+            System.out.println(sourcePath);
+            System.out.println(destinationPath);
+
+            try {
+                copyRecursive(sourcePath, destinationPath);
+                System.out.println("Backup inicial realizado com sucesso para: " + sourcePath.toString());
+
+                // Adicionar as pastas e arquivos ao watcher para monitoramento após o backup inicial
+                recursiveAddArquiveToWatcher(sourcePath);
+            } catch (Exception e) {
+                System.out.println("Erro ao realizar backup inicial: " + e);
+            }
+        }
+
     }
 
     private static void printKeyDirectoryMap(){
