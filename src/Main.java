@@ -21,7 +21,7 @@ public class Main {
 
     private static WatchService watchService;
     private static final Map<WatchKey, Path> keyDirectoryMap = new HashMap<>();
-    private static final int timeBetweenRuns = 10; // SECONDS
+    private static final int timeBetweenRuns = 60; // SECONDS
 
     private static final List<Path> fileThatCannotBeModified = new ArrayList<>();
     private static final LocalDateTime limitTimeForFileAndFolderReplace = LocalDateTime.now().minusDays(30); // 30 days
@@ -90,8 +90,6 @@ public class Main {
 
         }
 
-        printKeyDirectoryMap();
-
         // Criar um ScheduledExecutorService para executar a cada 1 minuto
         ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
         executor.scheduleAtFixedRate(Main::monitorEvents, 0, timeBetweenRuns, TimeUnit.SECONDS);
@@ -148,11 +146,12 @@ public class Main {
                                 System.out.println("Erro no recursive add " + e);
                             }
                         } else if(checkIfCanUpdateFile(fullSourcePath)){
-                            System.out.println(fullSourcePath + "+++" + destination);
+                            destination = Path.of(baseDestinationPath + "\\" + fullSourcePath.getParent().getFileName() + "\\" + fullSourcePath.getFileName());
                             Instant timeStamp = Instant.now();
                             addSourcePathControlArquive(fullSourcePath, destination, timeStamp);
                             Files.copy(fullSourcePath, destination, StandardCopyOption.REPLACE_EXISTING);
                         } else if(!checkIfCanUpdateFile(fullSourcePath)){
+                            System.out.println("cheguei no novo");
                             Path newDestination = Path.of(destination.getParent() + "\\Novo - " + relativePath.replace("\\", ""));
                             Files.copy(fullSourcePath, newDestination, StandardCopyOption.REPLACE_EXISTING);
                         }
