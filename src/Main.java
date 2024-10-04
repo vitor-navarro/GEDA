@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -27,7 +28,14 @@ public class Main {
     private static final LocalDateTime limitTimeForFileAndFolderReplace = LocalDateTime.now().minusDays(30); // 30 days
     private static final int limitTimeForFileAndFolderReplaceInDays = 30; // days
 
+    private static final long MAX_BYTES_PER_SECOND = 20 * 1024 * 1024; // caso coloque 20 irá Limitar a 60~70mbps por causa do buffer ser de 4096
+
+
     public static void main(String[] args) throws IOException {
+        if(!logArquiveExists()){
+            createLogArquive();
+        }
+
         if (!verifyArquivePathControlExists()){
             createArquivePathControl();
         }
@@ -47,6 +55,7 @@ public class Main {
         if(verifyArquiveSourcesPathsExists()){
             List<String> paths = readArquiveSourcesPaths();
             sourcePaths.addAll(paths);
+            addLog("Info: SourcesPaths add, " + sourcePaths);
         }
 
         for(int i = 0; i < sourcePaths.size(); i++) {
@@ -59,8 +68,9 @@ public class Main {
                         .map(Path::toString) // Converte Path para String
                         .toList(); // Filtra para pegar apenas subpastas
                 subSourcePaths.addAll(subdirectories);
+                addLog("Info: add subSourcesPath");
             } catch (IOException e) {
-                System.out.println("Erro ao adicionar os source paths" + e);
+                addLog("Error: ao adicionar os source paths" + e);
             }
         }
 
@@ -83,9 +93,10 @@ public class Main {
 
         if(verifyFirstBackup()){
             try{
-                performFistBackup();
+                performFirstBackup();
+                addLog("Info: First backup performed");
             } catch (Exception e){
-                System.out.println("Primeiro backup falhou " + e);
+                addLog("Error: Primeiro backup falhou" + e);
             }
 
         }
@@ -98,9 +109,10 @@ public class Main {
         try {
             Thread.sleep(Long.MAX_VALUE); // Mantém o programa em execução
         } catch (InterruptedException e) {
-            System.out.println("Erro de thread " + e);
+            addLog("Error: thread " + e);
             Thread.currentThread().interrupt(); // Lida com a interrupção do thread
         } finally {
+            addLog("End: thread finished");
             executor.shutdown(); // Fecha o executor ao final
         }
     }
@@ -118,14 +130,14 @@ public class Main {
                         try {
                             handlePathCopy(fullSourcePath, event);
                         } catch (Exception e) {
-                            System.out.println("error monitor events HandlePathCopy " + e);
+                            addLog("Error: monitor events HandlePathCopy " + e);
                         }
                     }
                 }
                 key.reset();
             }
         } catch (Exception e) {
-            System.out.println("Erro ao monitorar eventos: " + e.getMessage());
+            addLog("Error: monitor events " + e);
         }
     }
 
@@ -140,33 +152,70 @@ public class Main {
                     try {
                         if(Files.isDirectory(fullSourcePath)){
                             try{
-                                System.out.println("recursive");
+                                addLog("Info: recursive backup");
                                 copyRecursive(fullSourcePath, destination);
                                 recursiveAddArquiveToWatcher(fullSourcePath);
                             } catch (Exception e ){
-                                System.out.println("Erro no recursive add " + e);
+                                addLog("Error: recursive add " + e);
                             }
                         } else if(checkIfCanUpdateFile(fullSourcePath)){
-                            System.out.println("entrei no normal");
                             Path newDestination = Path.of(baseDestinationPath + "\\" + fullSourcePath.getParent().getFileName() + "\\" + fullSourcePath.getFileName());
                             Instant timeStamp = Instant.now();
-                            System.out.println(fullSourcePath + " - " + newDestination);
                             addSourcePathControlArquive(fullSourcePath, newDestination, timeStamp);
-                            Files.copy(fullSourcePath, newDestination, StandardCopyOption.REPLACE_EXISTING);
+                            copyFileWithLimit(fullSourcePath, newDestination);
+                            addLog("Info: File Backup. Source " + fullSourcePath + " Destination " + newDestination);
                         } else if(!checkIfCanUpdateFile(fullSourcePath)){
-                            System.out.println("cheguei no novo");
                             Path newDestination = Path.of(destination.getParent() + "\\Novo - " + relativePath.replace("\\", ""));
                             Files.copy(fullSourcePath, newDestination, StandardCopyOption.REPLACE_EXISTING);
+                            addLog("Info: Archive older than 30 days backup Source: " + fullSourcePath + " new destination " + newDestination);
                         }
 
                     } catch (Exception e) {
-                        System.out.println("Erro handle copy: " + e);
+                        addLog("Error: handle copy " + e);
                     }
                 }
 
             }
         }
     }
+
+    // Função para copiar o arquivo com limite de velocidade
+    private static void copyFileWithLimit(Path source, Path destination) throws IOException, InterruptedException {
+
+        //pode ser substituido por:
+        //Files.copy(sourcePath, destinatioPath, StandardCopyOption.REPLACE_EXISTING);
+
+        try (InputStream in = new BufferedInputStream(Files.newInputStream(source));
+             OutputStream out = new BufferedOutputStream(Files.newOutputStream(destination))) {
+            byte[] buffer = new byte[4096];
+            long startTime = System.currentTimeMillis();
+            long bytesTransferred = 0;
+            int bytesRead;
+
+            while ((bytesRead = in.read(buffer)) != -1) {
+                out.write(buffer, 0, bytesRead);
+                bytesTransferred += bytesRead;
+
+                // Se já transferiu mais do que o limite de bytes por segundo
+                if (bytesTransferred >= MAX_BYTES_PER_SECOND) {
+                    long currentTime = System.currentTimeMillis();
+                    long elapsedTime = currentTime - startTime;
+
+                    // Se passou menos de 1 segundo, aguarde o tempo restante
+                    if (elapsedTime < 1000) {
+                        Thread.sleep(1000 - elapsedTime);
+                    }
+
+                    // Reinicie o contador
+                    startTime = System.currentTimeMillis();
+                    bytesTransferred = 0;
+                }
+            }
+        } catch(Exception e){
+            addLog("Error:  copyFileWithLimit " + e);
+        }
+    }
+
 
     private static void copyRecursive(Path source, Path destination) throws IOException {
         if(Files.notExists(destination) && Files.isDirectory(source)){
@@ -188,11 +237,21 @@ public class Main {
                   Instant timeStamp = Instant.now();
                   Path destinationFile = destination.resolve(source.relativize(file));
                   addSourcePathControlArquive(file, destinationFile, timeStamp);
-                  Files.copy(file,destinationFile, StandardCopyOption.REPLACE_EXISTING);
+                  try {
+                      addLog("Info: Recursive add file: " + file + " to destination " + destination);
+                      copyFileWithLimit(file,destinationFile);
+                  } catch (InterruptedException e) {
+                      addLog("Error:  InternalCopyRecursive1 " + e);
+                  }
               } else{
                   String relativePath = String.valueOf(source.relativize(file));
                   Path newDestination = Path.of(destination.getParent() + "\\Novo - " + relativePath.replace("\\", ""));
-                  Files.copy(file,newDestination, StandardCopyOption.REPLACE_EXISTING);
+                  try {
+                      addLog("Info: Archive older than 30 days backup Source: " + relativePath + " new destination " + newDestination);
+                      copyFileWithLimit(file,newDestination);
+                  } catch (InterruptedException e) {
+                      addLog("Error:  InternalCopyRecursive2 " + e);
+                  }
               }
 
               return FileVisitResult.CONTINUE;
@@ -272,9 +331,26 @@ public class Main {
             }
 
         } catch (Exception e){
-            System.out.println("AddSourcePathToControlArquive error: " + e);
+            addLog("Error:  AddSourcePathToControlArquive " + e);
         }
 
+    }
+
+    private static void addLog(String log){
+
+        String arquiveName = "Log.txt";
+
+        LocalDateTime now = LocalDateTime.now();
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss");
+        String formattedDateTime = now.format(formatter);
+
+        log = formattedDateTime + " - " + log;
+
+        try (FileWriter writer = new FileWriter(arquiveName, true)) { // 'true' ativa o modo append
+            writer.write(log + System.lineSeparator()); // Adiciona mensagem e quebra de linha
+        } catch (IOException e) {
+            System.out.println("Erro no add log " + e);
+        }
     }
 
     private static void addFilesThatCannotBeModified(){
@@ -292,11 +368,11 @@ public class Main {
                         fileThatCannotBeModified.add(path);
                     }
                 } catch (IOException e) {
-                    System.out.println("Error 1 addFilesThatCannotBeModified " + e);
+                    addLog("addFilesThatCannotBeModified1 " + e);
                 }
             });
         } catch (IOException e) {
-            System.out.println("Error 2 addFilesThatCannotBeModified " + e);
+            addLog("addFilesThatCannotBeModified2 " + e);
         }
     }
 
@@ -321,9 +397,20 @@ public class Main {
             }
 
         } catch (Exception e){
-            System.out.println("Erro no checkIfCanUpdateFile " + e);
+            addLog("checkIfCanUpdateFile " + e);
         }
         return true; //mudar para false
+    }
+
+    private static void createLogArquive(){
+        try{
+            File logFile = new File("Log.txt");
+            if(logFile.createNewFile()){
+                addLog("Info: created log arquive.");
+            }
+        } catch (Exception e){
+            addLog("Error: log arquive do not be created, " + e);
+        }
     }
 
     private static void createArquivePathControl(){
@@ -331,12 +418,12 @@ public class Main {
             File pathControlFile = new File("PathControl.txt");
 
             if(pathControlFile.createNewFile()){
-                System.out.println("Arquivo criado com sucesso");
+                addLog("Info: pathControlFile created");
             } else {
-                System.out.println("Arquivo já existe");
+                addLog("Info: pathControlFile exists");
             }
         } catch (Exception e){
-            System.out.println("createPathControlArquive error " + e);
+            addLog("Error: createPathControlArquive " + e);
         }
     }
 
@@ -345,12 +432,12 @@ public class Main {
             File destinationFile = new File("BackupDestination.txt");
 
             if(destinationFile.createNewFile()){
-                System.out.println("Arquivo backup destination criado com sucesso");
+                addLog("Info: file backupDestionation created");
             } else {
-                System.out.println("Arquivo backup destination já existe");
+                addLog("Info: file backupDestionation exists");
             }
         } catch (Exception e){
-            System.out.println("createArquiveDestination error " + e);
+            addLog("Error: createArquiveDestination, " + e);
         }
     }
 
@@ -359,12 +446,12 @@ public class Main {
             File backupFile = new File("BackupSources.txt");
 
             if(backupFile.createNewFile()){
-                System.out.println("Arquivo backup sources criado com sucesso");
+                addLog("Info: file backup sources created.");
             } else {
-                System.out.println("Arquivo backup sources já existe");
+                addLog("Info: file backup sources exists.");
             }
         } catch (Exception e){
-            System.out.println("createArquiveSourcesPaths error " + e);
+            addLog("Error: createArquiveSourcesPaths, " + e);
         }
     }
 
@@ -376,8 +463,9 @@ public class Main {
         try {
             // Lê todas as linhas do arquivo e armazena na lista 'lines'
             lines = Files.readAllLines(Path.of(backupFile.getPath()));
+            addLog("Read: readArquiveSourcesPaths, sources " + lines);
         } catch (IOException e) {
-            System.out.println("readArquiveSourcesPaths error " + e);; // Trata a exceção se houver algum erro na leitura
+            addLog("Error: readArquiveSourcesPaths, " + e);
         }
 
         return lines;
@@ -389,19 +477,30 @@ public class Main {
 
         try (BufferedReader reader = new BufferedReader(new FileReader(destinationFile))){
             destinationPath = reader.readLine();
+            addLog("Read: readArquiveDestinationPath. destination: " + destinationPath);
         } catch(Exception e){
-            System.out.println("readArquiveDestinationPath error: " + e);
+            addLog("Error: readArquiveDestinationPath, " + e);
         }
 
         return destinationPath;
+    }
+
+    private static boolean logArquiveExists(){
+        File pathLogFile = new File("Log.txt");
+        if(pathLogFile.exists()){
+            return true;
+        }
+        return false;
     }
 
     private static boolean verifyArquivePathControlExists(){
         File pathControlFile = new File("PathControl.txt");
 
         if(pathControlFile.exists()){
+            addLog("Verify: PathControlFile exists");
             return true;
         }
+        addLog("Verify: PathControlFile not exists");
         return false;
     }
 
@@ -409,9 +508,10 @@ public class Main {
         File destinationFile = new File("BackupDestination.txt");
 
         if(destinationFile.exists()){
+            addLog("Verify: BackupDestination exists");
             return true;
         }
-
+        addLog("Verify: BackupDestination do not exists");
         return false;
     }
 
@@ -419,9 +519,10 @@ public class Main {
         File sourcesFile = new File("BackupSources.txt");
 
         if(sourcesFile.exists()){
+            addLog("Verify: BackupSources exists");
             return true;
         }
-
+        addLog("Verify: BackupSources do not exists");
         return false;
     }
 
@@ -431,30 +532,25 @@ public class Main {
 
             // Verifica se o arquivo já existe
             if (firstBackupFile.exists()) {
-                System.out.println("Arquivo firstBackup.txt já existe");
                 return false; // Indica que o arquivo já existia
             } else {
                 // Cria o arquivo se ele não existir
                 if (firstBackupFile.createNewFile()) {
-                    System.out.println("Arquivo firstBackup.txt criado com sucesso");
                     return true; // Indica que o arquivo foi criado com sucesso
-                } else {
-                    System.out.println("Falha ao criar o arquivo firstBackup.txt");
                 }
             }
         } catch (Exception e) {
-            System.out.println("Erro ao verificar/criar o first backup: " + e.getMessage());
+            addLog("Error: Verify/create first backup, " + e);
         }
         return false;
     }
 
-    private static void performFistBackup() throws Exception{
+    private static void performFirstBackup() throws Exception{
 
         File firstBackupFile = new File("firstBackup.txt");
         if(!firstBackupFile.exists()){
             firstBackupFile.createNewFile();
         }
-
 
         for (int i = 0; i < sourcePaths.size(); i++) {
             Path sourcePath = Path.of(sourcePaths.get(i));
@@ -465,7 +561,7 @@ public class Main {
                 // Adicionar as pastas e arquivos ao watcher para monitoramento após o backup inicial
                 recursiveAddArquiveToWatcher(sourcePath);
             } catch (Exception e) {
-                System.out.println("Erro ao realizar backup inicial: " + e);
+                addLog("Error: performFirstBackup " + e);
             }
         }
 
@@ -496,7 +592,7 @@ public class Main {
             reader.close();
 
         } catch (Exception e){
-            System.out.println("Read - ModifyTimestampFromSourcePathControlArquive erro: " + e);
+            addLog("Error: Read - ModifyTimestampFromSourcePathControlArquive, " + e);
         }
 
         try {
@@ -507,9 +603,8 @@ public class Main {
             }
 
             writer.close();
-            System.out.println("arquivo atualizado com sucesso");
         } catch (Exception e) {
-            System.out.println("Write - ModifyTimestampFromSourcePathControlArquive erro: " + e);
+            addLog("Error: Write - ModifyTimestampFromSourcePathControlArquive, " + e);
         }
     }
 
